@@ -33,19 +33,28 @@ no additional modeled device latency; their activity is counted. Scrubbing is
 an immediate modeled state transition, not a modeled physical SRAM bandwidth.
 Stop returns BUSY while active; there is no forced-abort or mid-DMA buffer reuse.
 
-The experiment generator uses one configuration for both modes: two 3 GHz
-TimingSimpleCPU cores, private 16 KiB L1I/L1D and 256 KiB L2, dual-channel
-DDR4-2400, 3 GiB memory, and 17 PMP entries per hart. Both instantiate trusted
-MMIO devices. Only unsecured accelerator DMA bypasses IOPMP. Never run protected
-workloads using `--security-mode unsecured`.
+The matched experiment uses one configuration for both modes: two 3 GHz
+AtomicSimpleCPU cores execute boot, process/enclave creation, and complete whole-EPM
+attestation; identical `m5_work_begin` markers switch both modes to two 3 GHz
+TimingSimpleCPU cores and reset statistics for the benchmark ROI. `m5_work_end`
+switches back to AtomicSimpleCPU. Both banks use private 16 KiB L1I/L1D and
+256 KiB L2, dual-channel DDR4-2400, 3 GiB memory, and 17 PMP entries per hart.
+Both modes instantiate trusted MMIO devices. Only unsecured accelerator DMA
+bypasses IOPMP. Never run protected workloads using `--security-mode unsecured`.
 
 COPY sizes double from 64 to 65536 bytes; VADD doubles from 16 to 16384 elements;
 square GEMM uses 2, 4, 8, 16, 32. Each uses batches 1 and 16, one warmup and five
 measured repetitions: 108 cases in two boots, 648 samples (540 measured). A batch submits all descriptors
-with one notification in both modes. Each protected repetition creates a fresh
-GEI; the enclave process stays alive for the six repetitions. Each batch repeats
-the same command over the same buffers; each case starts a new process. Cases
-run in fixed order with persistent caches; resetting counters does not flush them.
+with one notification in both modes. Every repetition creates a fresh context and GEI and performs complete FINALIZE,
+RUN, STOP, DESTROY, IOPMP revocation, and context release. The unsecured mode uses
+one benchmark invocation for all 54 cases. The final optimized V2 methodology also
+uses one 4 MiB protected-enclave invocation for all 54 cases. Every repetition keeps
+the fresh GPU lifecycle above, while exact canonical-policy digest reuse yields 27
+novel-policy misses and 297 exact-match hits. CPU-enclave creation and whole-EPM
+attestation are amortized; the append-only distinct-policy set is neither reset nor
+prepopulated. Use `--single-protected-invocation` when generating this campaign.
+Cases run in fixed order with
+persistent caches; resetting counters does not flush them.
 
 `PHASE8_CSV` records in-enclave/normal-process `rdcycle` measurements of total,
 create, configuration/preparation, finalization, launch, execution/consume,
@@ -67,12 +76,14 @@ include descriptors and completions. IOPMP counters count logical authorized
 or rejected requests, not memory-system packet fragments. Convert ticks using
 `simFreq`; do not interpret ticks as CPU cycles.
 
-`stats.txt` is reset after module loading and dumped after each case. Its ROI
-includes process/enclave launch, warmup, all five measured repetitions,
-preparation, and result verification. CSV scaling statistics exclude warmup. Do not mislabel the
-aggregate CPU/cache/DRAM statistics as measured-only per-operation samples.
-Attestation is measured separately by `gpu-attestation-export` and is excluded
-from the scaling benchmark.
+Each batched invocation enters one WORKBEGIN/WORKEND ROI. The benchmark resets and
+dumps statistics around each individual case, retaining exactly one statistics
+block per case; the WORKBEGIN handler also resets immediately after switching to
+TimingSimpleCPU.
+Thus whole-EPM attestation is functionally executed on AtomicSimpleCPU but excluded
+from both `PHASE8_CSV` and detailed-CPU statistics. All six repetitions, setup,
+and result validation inside the markers use TimingSimpleCPU; CSV scaling
+statistics still exclude warmup.
 
 ## Build and bounded validation
 
@@ -134,8 +145,8 @@ To reproduce elsewhere, build guest/firmware, run `prepare-image.py --source
 BASE.ext2 --output NEW.ext2 --build BUILD`, then `experiments.py --kernel FW.elf
 --bootrom ROM.elf --disk-image NEW.ext2 --output NEW_DIRECTORY`.
 Packaging verifies inserted files byte-for-byte. The manifest records input
-binary and relevant source hashes, including untracked files. New campaigns use
-two boots with one reset/dump pair per case. Do not pool older fresh-boot-per-case
+binary and relevant source hashes, including untracked files. The final optimized matched campaign uses two boots, one invocation per mode,
+and one benchmark-issued reset/dump pair per case. Do not pool older fresh-boot-per-case
 or failed V4 results with V5. Existing images/campaign directories are not replaced.
 
 Additional long simulations require user approval. **Expect several hours**,

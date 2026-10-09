@@ -84,5 +84,36 @@ with tempfile.TemporaryDirectory(prefix='phase8-batched-test-') as tmp:
     log.write_text(original.replace('MATCHED_POLLS,protected,copy,64,1,0,2', 'MATCHED_POLLS,protected,copy,64,1,0,0'))
     assert invoke().returncode!=0
     log.write_text(original); assert invoke().returncode==0
+    # Optimized V2 accepts batch-level polling and requires current diagnostics,
+    # exact policy-cache accounting, and staging-FIFO statistics.
+    (d/'manifest.json').write_text(json.dumps({
+        'layout':'batched-modes','protocol':'matched-optimized-policy-v2',
+        'cases':cases,'gpu_policy':{'expected_cache_misses':2,
+                                    'expected_cache_hits':10}}))
+    protected=d/'protected/board.platform.terminal'
+    text=protected.read_text()
+    for op,n,batch in cases:
+        for rep in range(6):
+            phase=f'PHASE8_CSV,protected,{op},{n},{batch},{rep},150,1,2,3,4,5,6,7,1000,{batch*(128+n)},{batch*(64+n)}'
+            policy_digest=1 if rep==0 else 0
+            final=(f'FINALIZE_DIAG,{op},{n},{batch},{rep},3,2,1,0,0,0,0,0,'
+                   f'{policy_digest},0,0,0,1')
+            execution=f'EXEC_DIAG,{op},{n},{batch},{rep},5,1,1,3,1000'
+            text=text.replace(phase,phase+'\n'+final+'\n'+execution)
+        text=text.replace(f'MATCHED_POLLS,protected,{op},{n},{batch},0,{batch+1}',
+                          f'MATCHED_POLLS,protected,{op},{n},{batch},0,1')
+    protected.write_text(text)
+    stats=d/'protected/stats.txt'; text=stats.read_text()
+    for index,(_,_,batch) in enumerate(cases):
+        marker=f'simTicks {1000+index}\n'
+        counters=(f'board.trusted_gpu_control.control.descriptorBegins {6*batch}\n'
+                  f'board.trusted_gpu_control.control.descriptorWords {6*batch*32}\n'
+                  f'board.trusted_gpu_control.control.descriptorCommits {6*batch}\n'
+                  'board.trusted_gpu_control.control.descriptorFailures 0\n')
+        text=text.replace(marker,marker+counters)
+    stats.write_text(text)
+    assert invoke().returncode==0
+    assert (d/'finalize-diagnostics.csv').exists()
+    assert (d/'execution-diagnostics.csv').exists()
 print('DESC_GPU_PHASE8_BATCHED_PROCESSING_TEST_PASS')
 print('DESC_GPU_MATCHED_PROCESSING_TEST_PASS')
